@@ -7,7 +7,6 @@ import { getDeviceFingerprint } from '../utils/device.util.js';
 import { getGeoIP } from '../utils/geoip.util.js';
 
 import { sendVerificationEmail, sendWelcomeEmail } from '../services/email.service.js';
-import { logActivity } from '../services/log.service.js';
 
 //* [POST] /api/auth/register - Register a new user 
 export const registerUser = async (req, res) => {
@@ -151,7 +150,6 @@ export const registerUser = async (req, res) => {
       ]);
     } catch (emailErr) {
       console.error('Email sending error:', emailErr);
-      // Continue despite email errors - don't fail registration
     }
 
     // Return success response
