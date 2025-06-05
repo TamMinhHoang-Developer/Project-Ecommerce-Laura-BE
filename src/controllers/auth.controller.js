@@ -1,14 +1,141 @@
 import bcrypt from 'bcrypt';
 import validator from 'validator';
 import supabase from '../config/supabaseClient.js';
+import jwt from 'jsonwebtoken';
 
 import { v4 as uuidv4 } from 'uuid';
 import { getDeviceFingerprint } from '../utils/device.util.js';
 import { getGeoIP } from '../utils/geoip.util.js';
 
-import { sendVerificationEmail, sendWelcomeEmail } from '../services/email.service.js';
+import { sendVerificationEmail, sendWelcomeEmail, sendSuspiciousLoginEmail } from '../services/email.service.js';
+import { loggerInfoAuthentication } from '../utils/logger.util.js';
 
-//* [POST] /api/auth/register - Register a new user 
+//* [POST] /api/auth/login - Login a user
+export const loginUser = async (req, res) => {
+  const MAX_FAILED_ATTEMPTS = 5;
+  const LOCK_DURATION_MINUTES = 15;
+
+  try {
+    const { email, password, rememberMe } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Email/Password is required' });
+    }
+
+    const ipAddress = req.ip;
+    const userAgent = req.headers['user-agent'];
+    const fingerprint = getDeviceFingerprint(req);
+    const geo_ip = getGeoIP(req);
+
+    if (!validator.isLength(password, { min: 8 })) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters long.' });
+    }
+
+    const { data: users, error: userErr } = await supabase
+      .from('users')
+      .select('*')
+      .or(`email.eq.${email},username.eq.${email}`);
+
+    if (userErr) throw new Error('Database query failed');
+
+    const user = users && users[0];
+    if (!user) {
+      await loggerInfoAuthentication(null, email, false, ipAddress, userAgent, fingerprint, geo_ip, 'invalid_credentials');
+      return res.status(400).json({ success: false, message: 'User not found' });
+    }
+
+    if (user.is_locked && new Date() - new Date(user?.last_failed_login) < LOCK_DURATION_MINUTES * 60000) {
+      return res.status(400).json({ success: false, message: 'Account is locked. Please try again later.' });
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    if (!isPasswordValid) {
+      const failedAttempts = (user.failed_login_attempts || 0) + 1;
+      await supabase
+        .from('users')
+        .update({
+          failed_login_attempts: failedAttempts,
+          last_failed_login: new Date().toISOString(),
+          is_locked: failedAttempts >= MAX_FAILED_ATTEMPTS
+        })
+        .eq('id', user.id);
+
+      await loggerInfoAuthentication(user.id, email, false, ipAddress, userAgent, fingerprint, geo_ip, 'wrong_password');
+      return res.status(401).json({ success: false, message: 'Invalid credentials.' });
+    }
+
+    await supabase
+      .from('users')
+      .update({
+        failed_login_attempts: 0,
+        is_locked: false,
+        last_failed_login: null
+      })
+      .eq('id', user.id);
+
+    const isNewDevice = fingerprint !== user.device_fingerprint;
+    const isNewLocation = geo_ip !== user.geo_ip;
+
+    if (isNewDevice || isNewLocation) {
+      await sendSuspiciousLoginEmail(user, ipAddress, fingerprint, geo_ip);
+      await loggerInfoAuthentication(user.id, email, false, ipAddress, userAgent, fingerprint, geo_ip, 'suspicious_login');
+      return res.status(200).json({ success: true, message: 'Suspicious login detected. Please verify your identity.' });
+    }
+
+    const accessToken = jwt.sign(
+      { userId: user.id, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' }
+    );
+
+    const refreshToken = jwt.sign(
+      { userId: user.id },
+      process.env.JWT_REFRESH_SECRET,
+      { expiresIn: rememberMe ? '30d' : '7d' }
+    );
+
+    await supabase.from('refresh_tokens').insert({
+      user_id: user.id,
+      token: refreshToken,
+      device_info: fingerprint,
+      ip_address: ipAddress,
+      expires_at: rememberMe
+        ? new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)
+        : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    });
+
+    await loggerInfoAuthentication({
+      user_id: user.id,
+      email: user.email,
+      success: true,
+      ip_address: ipAddress,
+      user_agent: userAgent,
+      device: getDeviceFingerprint(req),
+      geo_location: getGeoIP(req),
+      reason: 'success'
+    });
+
+    res.cookie('access_token', accessToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      maxAge: 15 * 60 * 1000
+    });
+
+    res.cookie('refresh_token', refreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      maxAge: rememberMe ? 30 * 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000
+    });
+
+    res.status(200).json({ message: 'Login successful.', accessToken });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
+//* [POST] /api/auth/register - Register a new user
 export const registerUser = async (req, res) => {
   try {
     const { email, username, password, confirmPassword, agreeToTerms } = req.body;
@@ -114,7 +241,10 @@ export const registerUser = async (req, res) => {
     // Add user to Supabase Auth
     const { data: authUser, error: authErr } = await supabase.auth.admin.createUser({
       email: emailNormalized,
-      password,
+      password: password,
+      user_metadata: {
+        displayName: usernameNormalized,
+      },
       email_confirm: false,
     });
 
