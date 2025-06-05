@@ -24,3 +24,23 @@ export const sendWelcomeEmail = async (to) => {
     html: '<p>Congrats on sending your <strong>first email</strong>!</p>'
   })
 };
+
+export const sendSuspiciousLoginEmail = async (email, ip, device, geo) => {
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  await resend.emails.send({
+    from: 'onboarding@resend.dev',
+    to: process.env.RESEND_EMAIL_FROM_TEST,
+    subject: 'Hello World Welcome',
+    html: `
+      <p>Suspicious login detected for your account.</p>
+        <ul>
+          <li>Email: ${email}</li>
+          <li>IP: ${ip}</li>
+          <li>Device: ${device}</li>
+          <li>Location: ${geo}</li>
+        </ul>
+      <p>If this is you, you can ignore it. If not, change your password now!</p>
+    `
+  })
+};
+

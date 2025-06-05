@@ -1,22 +1,22 @@
-// Không cần import crypto nữa vì không hash
+// No need to import crypto anymore since we're not hashing
 
 export const getDeviceFingerprint = (req) => {
   const userAgent = req.headers['user-agent'] || '';
   const ip = req.headers['x-forwarded-for'] || req.connection.remoteAddress || '';
-  
-  // Trích xuất thông tin thiết bị từ user-agent
+
+  // Extract device information from user-agent
   const deviceInfo = {
     browser: extractBrowser(userAgent),
     os: extractOS(userAgent),
     device: extractDevice(userAgent),
     ip: ip
   };
-  
-  // Trả về dưới dạng JSON string để dễ lưu trữ và phân tích
+
+  // Return as JSON string for easy storage and analysis
   return JSON.stringify(deviceInfo);
 };
 
-// Hàm trích xuất thông tin trình duyệt từ user-agent
+// Function to extract browser information from user-agent
 function extractBrowser(userAgent) {
   // Chrome
   if (userAgent.indexOf('Chrome') > -1) {
@@ -38,11 +38,11 @@ function extractBrowser(userAgent) {
   else if (userAgent.indexOf('MSIE') > -1 || userAgent.indexOf('Trident/') > -1) {
     return 'Internet Explorer';
   }
-  // Không xác định được
+  // Unknown
   return 'Unknown';
 }
 
-// Hàm trích xuất thông tin hệ điều hành từ user-agent
+// Function to extract operating system information from user-agent
 function extractOS(userAgent) {
   // Windows
   if (userAgent.indexOf('Windows') > -1) {
@@ -64,11 +64,11 @@ function extractOS(userAgent) {
   else if (userAgent.indexOf('Linux') > -1) {
     return 'Linux';
   }
-  // Không xác định được
+  // Unknown
   return 'Unknown';
 }
 
-// Hàm trích xuất thông tin thiết bị từ user-agent
+// Function to extract device type information from user-agent
 function extractDevice(userAgent) {
   // Mobile
   if (userAgent.indexOf('Mobile') > -1) {
