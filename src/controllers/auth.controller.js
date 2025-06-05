@@ -76,7 +76,7 @@ export const loginUser = async (req, res) => {
     const isNewLocation = geo_ip !== user.geo_ip;
 
     if (isNewDevice || isNewLocation) {
-      await sendSuspiciousLoginEmail(user, ipAddress, fingerprint, geo_ip);
+      await sendSuspiciousLoginEmail(user.email, ipAddress, fingerprint, geo_ip);
       await loggerInfoAuthentication(user.id, email, false, ipAddress, userAgent, fingerprint, geo_ip, 'suspicious_login');
       return res.status(200).json({ success: true, message: 'Suspicious login detected. Please verify your identity.' });
     }
