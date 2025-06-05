@@ -29,9 +29,13 @@
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
     "express-validator": "^7.2.1",
+    "geoip-lite": "^1.4.10",
     "helmet": "^8.1.0",
     "install": "^0.13.0",
     "jsonwebtoken": "^9.0.2",
-    "npm": "^10.9.2"
+    "nodemailer": "^7.0.3",
+    "npm": "^10.9.2",
+    "resend": "^4.5.2",
+    "uuid": "^11.1.0"
   }
 }
