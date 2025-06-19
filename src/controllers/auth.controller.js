@@ -9,6 +9,8 @@ import { getGeoIP } from '../utils/geoip.util.js';
 
 import { sendVerificationEmail, sendWelcomeEmail, sendSuspiciousLoginEmail } from '../services/email.service.js';
 import { loggerInfoAuthentication } from '../utils/logger.util.js';
+import { generateRandomCode } from '../utils/generate_token.util.js';
+import { sendPasswordResetEmail } from '../services/email.service.js';
 
 //* [POST] /api/auth/login - Login a user
 export const loginUser = async (req, res) => {
@@ -139,10 +141,10 @@ export const loginUser = async (req, res) => {
 //* [POST] /api/auth/register - Register a new user
 export const registerUser = async (req, res) => {
   try {
-    const { email, username, password, confirmPassword, agreeToTerms } = req.body;
+    const { email, username, password, confirmPassword, agreeToTerms, phone } = req.body;
 
     // Validate required fields
-    if (!email || !username || !password || !confirmPassword) {
+    if (!email || !username || !password || !confirmPassword || !phone) {
       return res.status(400).json({ success: false, message: 'Please fill in all required information.' });
     }
 
@@ -231,7 +233,8 @@ export const registerUser = async (req, res) => {
       failed_login_attempts: 0,
       role: 'user',
       device_fingerprint: fingerprint,
-      geo_ip: geo_ip
+      geo_ip: geo_ip,
+      phone: phone
     }).select().single();
 
     if (insertErr) {
@@ -296,5 +299,124 @@ export const registerUser = async (req, res) => {
       message: 'An unexpected error occurred during registration.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  }
+};
+
+//* [POST] /api/auth/forgot-password - Request password reset
+export const forgotUserPassword = async (req, res) => {
+  const { email, phone, username } = req.body;
+
+  if (!email && !phone && !username) {
+    return res.status(400).json({ success: false, message: 'Email, phone, or username is required.' });
+  }
+
+  try {
+    const { data: user, error: userErr } = await supabase
+      .from('users')
+      .select('*')
+      .or(`email.eq.${email},phone.eq.${phone},username.eq.${username}`)
+      .single();
+
+    // Trả về thông báo chung, không tiết lộ user có tồn tại hay không
+    if (userErr || !user || !user.email) {
+      return res.status(400).json({ message: "Account not found." });
+    }
+
+    const resetCode = generateRandomCode(6);
+    const expireAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    const { error: insertErr } = await supabase.from("password_reset_tokens").insert({
+      user_id: user.id,
+      token: resetCode,
+      expires_at: expireAt.toISOString(),
+    });
+    if (insertErr) {
+      return res.status(500).json({ message: 'Could not process password reset request.' });
+    }
+
+    try {
+      await sendPasswordResetEmail(user.email, resetCode);
+    } catch (mailErr) {
+      // Không tiết lộ lỗi gửi mail
+    }
+    return res.status(200).json({ message: 'If the account exists, a reset code has been sent to the registered email.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Internal server error.' });
+  }
+}
+
+//* [POST] /api/auth/verify-reset-code - Verify reset code
+export const verifyResetCode = async (req, res) => {
+  const { email, code } = req.body;
+  if (!email || !code) return res.status(400).json({ success: false, message: 'Email and code are required.' });
+
+  try {
+    const { data: user, error: userErr } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
+    if (userErr || !user) {
+      return res.status(400).json({ message: 'Invalid or expired reset code.' });
+    }
+
+    const { data: tokenRows, error: tokenErr } = await supabase
+      .from('password_reset_tokens')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('token', code)
+      .eq('used', false);
+
+    const token = tokenRows?.[0];
+    if (tokenErr || !token || Date.parse(token.expires_at) < Date.now()) {
+      return res.status(400).json({ message: 'Invalid or expired reset code.' });
+    }
+
+    return res.status(200).json({ message: 'Reset code verified.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Internal server error.' });
+  }
+}
+
+//* [POST] /api/auth/reset-password - Reset password
+export const resetPassword = async (req, res) => {
+  const { email, code, newPassword } = req.body;
+  if (!email || !code || !newPassword)
+    return res.status(400).json({ message: 'Email, code, and new password are required.' });
+
+  // Kiểm tra strong password
+  if (newPassword.length < 8 || !validator.isStrongPassword(newPassword)) {
+    return res.status(400).json({ message: 'Password must be at least 8 characters and strong (uppercase, lowercase, number, special character).' });
+  }
+
+  try {
+    const { data: user, error: userErr } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
+    if (userErr || !user) return res.status(400).json({ message: 'Invalid email or code.' });
+
+    const { data: tokenRows, error: tokenErr } = await supabase
+      .from('password_reset_tokens')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('token', code)
+      .eq('used', false);
+
+    const token = tokenRows?.[0];
+    if (tokenErr || !token || Date.parse(token.expires_at) < Date.now()) {
+      return res.status(400).json({ message: 'Invalid or expired reset code.' });
+    }
+
+    const hash = await bcrypt.hash(newPassword, 10);
+    const { error: updateErr } = await supabase.from('users').update({ password_hash: hash }).eq('id', user.id);
+    if (updateErr) return res.status(500).json({ message: 'Could not reset password.' });
+
+    await supabase.from('password_reset_tokens').update({ used: true }).eq('id', token.id);
+
+    const { error: authUpdateError } = await supabase.auth.admin.updateUserById(userData.id, {
+      password: newPassword
+    });
+
+    if (authUpdateError) {
+      return res.status(500).json({ message: 'Updated password in DB, but failed to update Supabase Auth.', error: authUpdateError.message });
+    }
+
+    return res.status(200).json({ message: 'Password reset successfully.' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Internal server error.' });
   }
 };
